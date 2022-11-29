@@ -28,7 +28,8 @@ def main():
     N = args.N
     m = args.m
     fname = args.data
-    filename = f'./samples/multi-coil/{fname}.npy'
+    filename = f'./samples/multi-coil/{args.task}/{fname}.npy'
+    mask_filename = f'./samples/multi-coil/prospective/{fname}_mask.npy'
 
     print('initaializing...')
     configs = importlib.import_module(f"configs.ve.fastmri_knee_320_ncsnpp_continuous")
@@ -41,6 +42,8 @@ def main():
     end_lamb = 0.2
     m_steps = 50
 
+    num_coils = 8
+
     if schedule == 'const':
         lamb_schedule = lambda_schedule_const(lamb=start_lamb)
     elif schedule == 'linear':
@@ -50,13 +53,21 @@ def main():
 
     # Read data
     img = normalize_complex(torch.from_numpy(np.load(filename).astype(np.complex64)))
-    img = img.view(1, 15, 320, 320)
+    # TODO: Changed to 8 virtual coils (JW)
+    img = img.view(1, num_coils, 320, 320)
     img = img.to(config.device)
 
-    mask = get_mask(img, img_size, batch_size,
-                    type=args.mask_type,
-                    acc_factor=args.acc_factor,
-                    center_fraction=args.center_fraction)
+
+    # TODO: Changed to look for retrospective and prospective (JW)
+    if args.task == 'retrospective':
+        # generate mask
+        mask = get_mask(img, img_size, batch_size,
+                        type=args.mask_type,
+                        acc_factor=args.acc_factor,
+                        center_fraction=args.center_fraction)
+    elif args.task == 'prospective':
+        mask = torch.from_numpy(np.load(mask_filename))
+        mask = mask.view(1, 1, 320, 320)
 
     ckpt_filename = f"./weights/checkpoint_95.pth"
     sde = VESDE(sigma_min=config.model.sigma_min, sigma_max=config.model.sigma_max, N=N)
@@ -105,8 +116,9 @@ def main():
     else:
         mps = mr.app.EspiritCalib(kspace.cpu().detach().squeeze().numpy()).run()
         np.save(str(save_root / f'sens.npy'), mps)
-    mps = torch.from_numpy(mps).view(1, 15, 320, 320).to(kspace.device)
+    mps = torch.from_numpy(mps).view(1, num_coils, 320, 320).to(kspace.device)
 
+    #Defines the reconstruction procedure
     pc_fouriercs = get_pc_fouriercs_RI_coil_SENSE(sde,
                                                   predictor, corrector,
                                                   inverse_scaler,
@@ -149,6 +161,10 @@ def main():
 
 def create_argparser():
     parser = argparse.ArgumentParser()
+    # TODO: Added task (JW)
+    parser.add_argument('--task', choices=['retrospective', 'prospective'], default='retrospective',
+                        type=str, help='If retrospective, under-samples the fully-sampled data with generated mask.'
+                                       'If prospective, runs score-POCS with the given mask')
     parser.add_argument('--data', type=str, help='which data to use for reconstruction', required=True)
     parser.add_argument('--mask_type', type=str, help='which mask to use for retrospective undersampling.'
                                                       '(NOTE) only used for retrospective model!', default='gaussian1d',
