@@ -579,7 +579,8 @@ def get_pc_fouriercs_RI_coil_SENSE(sde, predictor, corrector, inverse_scaler, sn
       # number of iterations of PC sampler
       for i in tqdm(range(sde.N)):
         # coil x_c update
-        for c in range(15):
+        # TODO: Changed to infer the number of coils
+        for c in range(data.shape[1]):
           t = timesteps[i]
 
           # slicing the dimension with c:c+1 ("one-element slice") preserves dimension
