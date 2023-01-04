@@ -1,0 +1,1 @@
+"{\"name\": \"Jeff\", \"eventId\": \"mb1125gv2fi25fvqhj8ihsrbn8\", \"machine\": {\"machine_name\": \"ece-d01181714S\", \"machine_tab_id\": \"501470054\", \"gpu_count\": 4, \"gpu_memory\": 32, \"gpu_type\": \"V100\"}, \"gpus\": [2, 3]}"

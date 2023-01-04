@@ -577,7 +577,8 @@ def get_pc_fouriercs_RI_coil_SENSE(sde, predictor, corrector, inverse_scaler, sn
       timesteps = torch.linspace(sde.T, eps, sde.N)
 
       # number of iterations of PC sampler
-      for i in tqdm(range(sde.N)):
+      #for i in tqdm(range(sde.N)):
+      for i in range(sde.N):
         # coil x_c update
         # TODO: Changed to infer the number of coils
         for c in range(data.shape[1]):

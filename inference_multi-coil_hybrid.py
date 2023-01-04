@@ -1,4 +1,11 @@
+import os
 from pathlib import Path
+
+import yaml
+
+import network_utils
+import fastmri
+import viz
 from models import utils as mutils
 from sde_lib import VESDE
 from sampling import (ReverseDiffusionPredictor,
@@ -18,9 +25,12 @@ import argparse
 import sigpy.mri as mr
 import sigpy as sp
 import torchvision
+from fastmri.data.transforms import to_tensor, tensor_to_complex_np
 
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 from typing import Optional
+
+
 
 def main():
     ###############################################
@@ -35,7 +45,7 @@ def main():
     filename = f'./samples/multi-coil/{args.task}/{fname}.npy'
     mask_filename = f'./samples/multi-coil/prospective/{fname}_mask.npy'
 
-    print('initaializing...')
+    print('initializing...')
     configs = importlib.import_module(f"configs.ve.fastmri_knee_320_ncsnpp_continuous")
     config = configs.get_config()
     img_size = config.data.image_size
@@ -60,7 +70,6 @@ def main():
     # TODO: Changed to 8 virtual coils (JW)
     img = img.view(1, num_coils, 320, 320)
     img = img.to(config.device)
-
 
     # TODO: Changed to look for retrospective and prospective (JW)
     if args.task == 'retrospective':
@@ -122,7 +131,7 @@ def main():
         np.save(str(save_root / f'sens.npy'), mps)
     mps = torch.from_numpy(mps).view(1, num_coils, 320, 320).to(kspace.device)
 
-    #Defines the reconstruction procedure
+    # Defines the reconstruction procedure
     pc_fouriercs = get_pc_fouriercs_RI_coil_SENSE(sde,
                                                   predictor, corrector,
                                                   inverse_scaler,
@@ -176,7 +185,7 @@ def create_argparser():
     parser.add_argument('--acc_factor', type=int, help='Acceleration factor for Fourier undersampling.'
                                                        '(NOTE) only used for retrospective model!', default=4)
     parser.add_argument('--center_fraction', type=float, help='Fraction of ACS region to keep.'
-                                                       '(NOTE) only used for retrospective model!', default=0.08)
+                                                              '(NOTE) only used for retrospective model!', default=0.08)
     parser.add_argument('--save_dir', default='./results')
     parser.add_argument('--N', type=int, help='Number of iterations for score-POCS sampling', default=500)
     parser.add_argument('--m', type=int, help='Number of corrector step per single predictor step.'
@@ -191,175 +200,14 @@ def psnr(gt: np.ndarray, pred: np.ndarray, maxval: Optional[float] = None) -> np
     return peak_signal_noise_ratio(gt, pred, data_range=maxval)
 
 
-#Convert image so there are two channels for real and imaginary and c coils
-def chans_to_coils(multicoil_imgs, training= False):
-    
-    #Add a batch dimension if needed
-    if len(multicoil_imgs.shape) < 4:
-        multicoil_imgs = multicoil_imgs.unsqueeze(0)
-        
-    b, c, h, w = multicoil_imgs.shape
-        
-    #Split into real and imag
-    #if training:
-    #    multicoil_imgs = multicoil_imgs.reshape(b, -1, 2, h, w)
-    #    multicoil_imgs = multicoil_imgs.permute(0,1,3,4,2)#.contiguous()
-    #else:
-    multicoil_imgs = torch.stack([multicoil_imgs[:,0:int(c):2,:,:], multicoil_imgs[:,1:int(c):2,:,:]], dim=-1)
-
-    
-    return multicoil_imgs
-
-def show_multicoil_combo(multicoil_imgs, maps, val_range = None, return_grid=False, **kwargs):
-    
-    #Get the coil images from the channels
-    if multicoil_imgs.shape[-1] != 2:
-        multicoil_imgs = chans_to_coils(multicoil_imgs)
-    
-    b, num_coils, h, w, _ = multicoil_imgs.shape
-    
-    if torch.is_tensor(maps):
-        if len(maps.shape) <4:
-            maps = maps.unsqueeze(0)
-        maps = maps.cpu().numpy()
-    else:
-        if len(maps.shape)<4:
-            maps = np.expand_dims(maps, axis=0)
-        
-    combo_imgs = []
-    for i in range(b):
-        with sp.Device(0):
-            #Show SENSE estimate
-            S = sp.linop.Multiply((h,w), maps[i])
-            combo_img = S.H * tensor_to_complex_np(multicoil_imgs[i].cpu())
-            
-            combo_imgs.append(to_tensor(combo_img))
-        
-    combo_imgs = torch.stack(combo_imgs)
-    
-    if val_range is None:
-        
-        if return_grid:
-            grid = show_img(combo_imgs.cpu(), return_grid=True, **kwargs)
-        
-        else: 
-            show_img(combo_imgs.cpu(), return_grid=False, **kwargs)
-            
-    else:
-        if return_grid:
-            grid = show_img(combo_imgs.cpu(), val_range = val_range, return_grid=True, **kwargs)
-        
-        else: 
-            show_img(combo_imgs.cpu(), val_range = val_range, return_grid=False, **kwargs)
-    
-    if return_grid:
-        return grid
-    
-def show_img(plot_imgs, nrow=5, return_grid=False, mean = 0, std = 1, colormap = None, scale_each = True, **kwargs):
-    '''
-    Show any type of image (real or complex)
-    '''
-    
-    #Check if it is a np array
-    if isinstance(plot_imgs, np.ndarray):
-        plot_imgs = torch.from_numpy(plot_imgs)
-        
-    #Put the images on the cpu
-    plot_imgs = plot_imgs.detach().cpu()
-    
-    #Make the image 4 dims
-    if len(plot_imgs.shape) == 3:
-        plot_imgs = plot_imgs.unsqueeze(0)
-        
-    #Put the channel dimensions in the second dimension if needed
-    if plot_imgs.shape[-1] < 5:
-        plot_imgs = plot_imgs.permute(0,3,1,2)
-        
-    #Get the magnitude image if complex
-    if plot_imgs.shape[1] == 2:
-        plot_imgs = plot_imgs.permute(0,2,3,1)
-        #plot_imgs = fastmri.complex_abs(plot_imgs*(std + 1e-11) + mean).unsqueeze(1)
-        plot_imgs = fastmri.complex_abs(plot_imgs).unsqueeze(1)
-        
-        
-    #Put the images in a grid and show them
-    if (plot_imgs[0].dtype == torch.int32) or (plot_imgs[0].dtype == torch.uint8):
-        grid = torchvision.utils.make_grid(plot_imgs, nrow = int(nrow), scale_each=False, normalize=False)
-        
-    elif 'val_range' in kwargs:
-        grid = torchvision.utils.make_grid(plot_imgs, nrow = int(nrow), normalize=True, value_range=kwargs['val_range'])
-        
-    elif colormap is not None:
-        grid = torchvision.utils.make_grid(plot_imgs, nrow = int(nrow), scale_each=False, normalize=False)
-        
-    else:
-        grid = torchvision.utils.make_grid(plot_imgs, nrow = int(nrow), scale_each=scale_each, normalize=True)
-        
-    
-        
-    if 'save_dir' in kwargs:
-        
-        if 'rect' in kwargs:
-            f = plt.figure()
-            f.set_figheight(15)
-            f.set_figwidth(15)
-            
-            if 'rect' in kwargs:
-                for i, rect in enumerate(kwargs['rect']):
-                    plt.gca().add_patch(Rectangle((rect[0],rect[1]),rect[2],rect[3],linewidth=5,edgecolor=kwargs['rect_colors'][i],facecolor='none'))        
-                #grid = draw_bounding_boxes(grid, kwargs['rect'], colors=kwargs['rect_colors'])
-                
-            plt.axis("off")
-            
-            if colormap is not None:
-                plt.imshow(grid[0].unsqueeze(0).permute(1, 2, 0).numpy(), cmap='RdGy', vmin=grid.min(), vmax=grid.max())
-            else:
-                plt.imshow(grid.permute(1, 2, 0).numpy())
-        
-            #Use a custom title
-            if 'title' in kwargs:
-                plt.title(kwargs['title'])
-                
-            #Save the image
-            plt.savefig(kwargs['save_dir'], bbox_inches='tight',pad_inches=0)
-        
-        else:
-            #Save the image
-            torchvision.utils.save_image(grid, kwargs['save_dir'])
-    
-    else:
-        if not return_grid:
-            f = plt.figure()
-            f.set_figheight(15)
-            f.set_figwidth(15)
-            
-            if 'rect' in kwargs:
-                for i, rect in enumerate(kwargs['rect']):
-                    plt.gca().add_patch(Rectangle((rect[0],rect[1]),rect[2],rect[3],linewidth=2,edgecolor=kwargs['rect_colors'][i],facecolor='none'))        
-                #grid = draw_bounding_boxes(grid, kwargs['rect'], colors=kwargs['rect_colors'])
-                
-            plt.axis("off")
-            
-            if colormap is not None:
-                plt.imshow(grid[0].unsqueeze(0).permute(1, 2, 0).numpy(), cmap='RdGy', vmin=grid.min(), vmax=grid.max())
-            else:
-                plt.imshow(grid.permute(1, 2, 0).numpy())
-        
-            #Use a custom title
-            if 'title' in kwargs:
-                plt.title(kwargs['title'])
-                
-        else:
-            return grid
-
-
+# %%
 if __name__ == "__main__":
     ###############################################
     # 1. Configurations
     ###############################################
 
     # args
-    N = 200
+    N = 2000
     m = 1
     fname = 'val25'
     task = 'prospective'
@@ -392,7 +240,6 @@ if __name__ == "__main__":
     # TODO: Changed to 8 virtual coils (JW)
     img = img.view(1, num_coils, 320, 320)
     img = img.to(config.device)
-
 
     # TODO: Changed to look for retrospective and prospective (JW)
     if task == 'retrospective':
@@ -434,7 +281,7 @@ if __name__ == "__main__":
     for t in irl_types:
         save_root_f = save_root / t
         save_root_f.mkdir(parents=True, exist_ok=True)
-
+#%%
     ###############################################
     # 2. Inference
     ###############################################
@@ -447,24 +294,24 @@ if __name__ == "__main__":
     under_img = ifft2_m(under_kspace)
 
     # ESPiRiT
-    if mps_dir.exists():
-        mps = np.load(str(mps_dir))
-    else:
-        mps = mr.app.EspiritCalib(under_kspace.cpu().detach().squeeze().numpy(),
-                                  calib_width = num_acs,
-                                  crop=0.7,
-                                  device=sp.Device(0),
-                                  kernel_width=6).run()
-        np.save(str(save_root / f'sens.npy'), mps)
+    # if mps_dir.exists():
+    #     mps = np.load(str(mps_dir))
+    # else:
+    mps = mr.app.EspiritCalib(under_kspace.cpu().detach().squeeze().numpy(),
+                              calib_width=num_acs,
+                              crop=0.7,
+                              #device=sp.Device(0),
+                              kernel_width=6).run()
+        #np.save(str(save_root / f'sens.npy'), mps)
     mps = torch.from_numpy(mps).view(1, num_coils, 320, 320).to(kspace.device)
 
-    #Defines the reconstruction procedure
+    # Defines the reconstruction procedure
     pc_fouriercs = get_pc_fouriercs_RI_coil_SENSE(sde,
                                                   predictor, corrector,
                                                   inverse_scaler,
                                                   snr=snr,
                                                   n_steps=m,
-                                                  m_steps=50,
+                                                  m_steps=m_steps,
                                                   mask=mask,
                                                   sens=mps,
                                                   lamb_schedule=lamb_schedule,
@@ -478,22 +325,53 @@ if __name__ == "__main__":
     toc = time.time() - tic
     print(f'Time took for recon: {toc} secs.')
 
+#%%
+
     ###############################################
     # 3. Saving recon
     ###############################################
-    under_img = root_sum_of_squares(under_img, dim=1)
+    under_img1 = root_sum_of_squares(under_img, dim=1)
     label = root_sum_of_squares(img, dim=1)
-    input = under_img.squeeze().cpu().detach().numpy()
+    input = under_img1.squeeze().cpu().detach().numpy()
     label = label.squeeze().cpu().detach().numpy()
     mask_sv = mask[0, 0, :, :].squeeze().cpu().detach().numpy()
 
     np.save(str(save_root / 'input' / fname) + '.npy', input)
     np.save(str(save_root / 'input' / (fname + '_mask')) + '.npy', mask_sv)
     np.save(str(save_root / 'label' / fname) + '.npy', label)
-    plt.imsave(str(save_root / 'input' / fname) + '.png', np.abs(input), cmap='gray')
-    plt.imsave(str(save_root / 'label' / fname) + '.png', np.abs(label), cmap='gray')
+    plt.imsave(str(save_root / 'input' / fname) + '_rss.png', np.abs(input), cmap='gray')
+    plt.imsave(str(save_root / 'label' / fname) + '_rss.png', np.abs(label), cmap='gray')
 
-    x = root_sum_of_squares(x, dim=1)
-    recon = x.squeeze().cpu().detach().numpy()
+    x1 = root_sum_of_squares(x, dim=1)
+    recon = x1.squeeze().cpu().detach().numpy()
     np.save(str(save_root / 'recon' / fname) + '.npy', recon)
-    plt.imsave(str(save_root / 'recon' / fname) + '.png', np.abs(recon), cmap='gray')
+    plt.imsave(str(save_root / 'recon' / fname) + '_rss.png', np.abs(recon), cmap='gray')
+
+    psnr_val = psnr(np.abs(label), np.abs(recon))
+    print(psnr_val)
+
+
+#%% Do the reconstructions with predicted map
+    under_img2 = network_utils.multicoil2single(to_tensor(under_img.cpu()),mps)
+    gt_img2 = network_utils.multicoil2single(to_tensor(img.cpu()), mps)
+    recon_img2 = network_utils.multicoil2single(to_tensor(x.cpu()), mps)
+
+    plt.imsave(str(save_root / 'input' / fname) + '_maps.png', fastmri.complex_abs(under_img2).squeeze().numpy(), cmap='gray')
+    plt.imsave(str(save_root / 'label' / fname) + '_maps.png', fastmri.complex_abs(gt_img2).squeeze().numpy(), cmap='gray')
+    plt.imsave(str(save_root / 'recon' / fname) + '_maps.png', fastmri.complex_abs(recon_img2).squeeze().numpy(), cmap='gray')
+
+#%%
+    psnr_val_maps = psnr(fastmri.complex_abs(gt_img2).numpy(), fastmri.complex_abs(recon_img2).numpy())
+    print(psnr_val_maps)
+
+#%% Save the PSNR values
+    #Get the path to save the metric scores
+    report_path = os.path.join(save_root, 'psnr')
+    Path(report_path).mkdir(parents=True, exist_ok=True)
+    report_dict = {'Metrics': {'PSNR (maps)': psnr_val_maps,
+                                'PSNR (RSS)': psnr_val},
+                        }
+    report_file_path =  os.path.join(report_path, 'psnr_report{0}.yaml'.format(N))
+    with open(report_file_path, 'w') as file:
+        documents = yaml.dump(report_dict, file)
+

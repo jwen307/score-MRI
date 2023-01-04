@@ -38,11 +38,21 @@ def crop_center(img, cropx, cropy):
   return img[:, starty:starty + cropy, startx:startx + cropx]
 
 
-def normalize(img):
+def normalize(img, give_params = False):
   """ Normalize img in arbitrary range to [0, 1] """
-  img -= torch.min(img)
-  img /= torch.max(img)
+  img_min = torch.min(img)
+  img -= img_min
+  img_max = torch.max(img)
+  img /= img_max
+  if give_params:
+      return img, img_min, img_max
   return img
+
+def unnormalize(img, img_min, img_max):
+    img *= img_max
+    img += img_min
+    
+    return img
 
 
 def normalize_np(img):
@@ -52,11 +62,27 @@ def normalize_np(img):
   return img
 
 
-def normalize_complex(img):
+def normalize_complex(img, give_params = False):
   """ normalizes the magnitude of complex-valued image to range [0, 1] """
+  if give_params:
+      abs_img, mag_min, mag_max = normalize(torch.abs(img), give_params=give_params)
+      #ang_img, ang_min, ang_max = normalize(torch.angle(img),give_params=give_params)
+      #return abs_img * torch.exp(1j * ang_img), [mag_min, mag_max, ang_min, ang_max]
+      ang_img = torch.angle(img)
+      return abs_img * torch.exp(1j*ang_img), [mag_min, mag_max]
+      
   abs_img = normalize(torch.abs(img))
   ang_img = normalize(torch.angle(img))
   return abs_img * torch.exp(1j * ang_img)
+
+def unnormalize_complex(img, min_max):
+    """ Unnormalizes the complex image"""
+    abs_img = unnormalize(torch.abs(img), min_max[0], min_max[1])
+    #ang_img = unnormalize(torch.angle(img), min_max[2], min_max[3])
+    ang_img = torch.angle(img)
+    
+    return abs_img * torch.exp(1j * ang_img)
+    
 
 
 class lambda_schedule:
